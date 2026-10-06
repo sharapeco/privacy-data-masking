@@ -6,6 +6,7 @@ struct PDMask: AsyncParsableCommand {
         commandName: "pdmask",
         abstract: "画像に写った個人情報をオンデバイスで検出して黒塗りする。",
         subcommands: [
+            MaskCommand.self,
             DetectCommand.self
         ]
     )
