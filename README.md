@@ -1,0 +1,90 @@
+# pdmask — 画像の個人情報黒塗りツール
+
+画像（スクリーンショット・書類の写真など）に写った個人情報を検出して黒塗りする macOS 用 CLI。
+文字認識・顔検出には Vision framework、氏名・住所の判定には macOS のオンデバイス LLM（FoundationModels）を使う。**画像も文字も外部には送信しない。**
+
+## 前提条件
+
+- macOS 26 (Tahoe) 以降、Apple Silicon Mac
+- **Apple Intelligence が有効になっていること**（システム設定 > Apple Intelligence と Siri）
+- **Xcode.app がインストールされ、選択されていること**（Command Line Tools だけでは `@Generable` マクロをビルドできない）
+
+  ```sh
+  sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+  ```
+
+## ビルド
+
+```sh
+swift build
+```
+
+## 使い方
+
+```sh
+# 黒塗り画像を書き出す（省略時の出力先: output/<元ファイル名>-masked.<拡張子>）
+swift run pdmask mask --image examples/matsumoto-hisashi.jpg
+
+# 出力先と検出結果 JSON を指定する
+swift run pdmask mask --image photo.heic --output masked.jpg --report report.json
+
+# 検出結果だけを JSON で見る（画像は書き出さない）
+swift run pdmask detect --image examples/fixture-profile.png
+```
+
+| オプション | 説明 |
+|---|---|
+| `--output <path>` | 出力画像のパス。拡張子から形式を決める（不明な場合は入力と同じ形式） |
+| `--report <path>` | 検出結果 JSON の出力先（`mask` のみ） |
+| `--no-faces` | 顔を塗らない |
+| `--no-barcodes` | バーコード／QR コードを塗らない |
+| `--face-scale <倍率>` | 顔の矩形を中心から何倍に広げて塗るか（既定 1.3） |
+
+## 何を塗るか
+
+氏名・住所・連絡先など、**個人を直接特定できる情報**を塗る。政党・選挙区・役職・会社名・店舗名などの属性は残す。
+
+| 種類 | 判定方法 |
+|---|---|
+| 氏名（ふりがな、敬称付きも含む） | LLM ＋ 補助ルール（「氏名」「担当」などのラベルの値、「〇〇様／さん」、氏名のすぐ上や下にあるかなだけの行） |
+| 住所 | LLM ＋ 補助ルール（〒で始まる行、「市区町村＋番地」の形、住所の次の行にある建物名や部屋番号） |
+| 電話番号・メールアドレス・郵便番号 | 正規表現 |
+| 生年月日 | 日付の正規表現。ただし「生年月日」「生まれ」「歳」などのキーワードが近くにあるときだけ |
+| クレジットカード番号 | 13〜19 桁で Luhn チェックが通るもの |
+| マイナンバー | 12 桁でチェックデジットが合うもの |
+| 顔 | Vision の顔検出（矩形を広げて塗る） |
+| バーコード／QR コード | Vision のバーコード検出 |
+
+ルールと LLM のどちらかが検出すれば塗る（塗り漏れより塗りすぎを優先する）。
+
+## 安全のための挙動
+
+- **画像のメタデータは引き継がない**（EXIF の GPS 位置・撮影日時・端末名など）。EXIF の向きは画素に反映してから処理する。独自の ICC プロファイルは sRGB に変換する。
+- **途中で失敗したら画像を書き出さない**（Apple Intelligence が使えない、モデルが判定を拒否した、など）。一部だけ塗られた画像ができることはない。
+- 入力画像を上書きする出力先は指定できない。
+
+## 検出結果 JSON
+
+`detect` と `mask --report` の JSON には、OCR で読めた行（`lines`）と、塗った領域（`regions`）が入る。
+
+- `category`: `name` / `address` / `phone` / `email` / `postalCode` / `birthdate` / `cardNumber` / `myNumber` / `face` / `barcode`
+- `source`: `rule`（ルール）/ `llm` / `both`（両方）/ `vision`（顔・バーコード）
+- `box`: 画像に対する比率（0〜1）。**原点は左下**（Vision の座標系）
+
+## 既知の制限
+
+- **OCR で読めない文字は検出できない**：ロゴ化された文字、手書き、縦書き、ごく小さい文字など。OCR の読み間違いにも影響される（例：「担当 佐藤」が「担＝ 佐藤」と読まれると、ラベルのルールが効かず、LLM も見逃すことがある）。
+- **顔検出の限界**：横顔、小さく写った顔、イラストやアイコンの顔は検出されないことがある。既定の倍率では髪の一部が残る。気になる場合は `--face-scale` を大きくする。
+- LLM の判定は完全ではない。**公開前には必ず出力画像を目で確認すること。**
+- 1 回に処理できるのは 1 ファイル。
+
+## 開発
+
+```sh
+swift test                                              # ルールの単体テスト
+swift scripts/make-fixture.swift examples/fixture-profile.png   # 架空の個人情報を描いたテスト画像を作り直す
+```
+
+テスト画像:
+- `examples/matsumoto-hisashi.jpg` — 実在の議員紹介ページのスクリーンショット（氏名・ふりがな・顔）
+- `examples/fixture-profile.png` — 架空の会員登録票（住所・電話・メール・生年月日・カード番号・QR コード、および塗ってはいけない文字列）

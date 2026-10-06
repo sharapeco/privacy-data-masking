@@ -230,3 +230,38 @@ private func contains(_ results: [(PIICategory, String)], _ category: PIICategor
         #expect(abs(box.x - 0.35) < 1e-9 && abs(box.width - 0.3) < 1e-9)
     }
 }
+
+@Suite struct Regressions {
+    @Test func cardNumberIsNotAlsoMyNumber() {
+        #expect(!detected("4111 1111 1111 1111").contains { $0.0 == .myNumber })
+    }
+
+    @Test func postalCodeReportedOnce() {
+        let postal = detected("〒100-0001 東京都千代田区千代田1-1").filter { $0.0 == .postalCode }
+        #expect(postal.map(\.1) == ["〒100-0001"])
+    }
+
+    @Test func phoneBelowAddressIsNotAddressContinuation() {
+        let lines = [
+            TestLine("サンプルマンション302号室", row: 0),
+            TestLine("090-1234-5678", row: 1),
+        ]
+        let address = TextMatch(lineIndex: 0, range: lines[0].text.startIndex..<lines[0].text.endIndex, category: .address)
+        #expect(PIIRules.expand([address], lines: lines).isEmpty)
+    }
+
+    @Test func furiganaLabelIsNotFurigana() {
+        let lines = [TestLine("氏名", row: 0, width: 0.1), TestLine("ふりがな", row: 1, width: 0.15)]
+        let name = TextMatch(lineIndex: 0, range: lines[0].text.startIndex..<lines[0].text.endIndex, category: .name)
+        #expect(PIIRules.expand([name], lines: lines).isEmpty)
+    }
+
+    @Test func staffLabel() {
+        #expect(contains(detected("担当 佐藤"), .name, "佐藤"))
+    }
+
+    @Test(arguments: ["氏名", "氏名：", "ふりがな", " 住所 "])
+    func labelsAreRecognized(text: String) {
+        #expect(PIIRules.isLabel(text))
+    }
+}

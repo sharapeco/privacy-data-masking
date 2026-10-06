@@ -60,6 +60,7 @@ public enum PIIRules {
         for index in nameLines where !isKanaOnly(lines[index].text) {
             for neighbor in [lineAbove(index, lines: lines), lineBelow(index, lines: lines)].compactMap({ $0 })
             where isKanaOnly(lines[neighbor].text)
+                && !isLabel(lines[neighbor].text)
                 && horizontalOverlapRatio(lines[index].box, lines[neighbor].box) >= 0.3 {
                 added.append(wholeLine(neighbor, lines: lines, category: .name))
             }
@@ -72,7 +73,10 @@ public enum PIIRules {
                 guard let below = lineBelow(index, lines: lines),
                       !addressLines.contains(below),
                       abs(lines[below].box.minX - lines[index].box.minX) < 0.05,
-                      firstMatch(addressContinuationPattern, in: NormalizedText(lines[below].text).text) != nil
+                      case let text = NormalizedText(lines[below].text),
+                      firstMatch(addressContinuationPattern, in: text.text) != nil,
+                      phones(in: text, lineIndex: below).isEmpty,
+                      emails(in: text, lineIndex: below).isEmpty
                 else { continue }
                 added.append(wholeLine(below, lines: lines, category: .address))
                 next.insert(below)
@@ -115,7 +119,10 @@ public enum PIIRules {
     static func postalCodes(in line: NormalizedText, lineIndex: Int, isAddressLine: Bool) -> [TextMatch] {
         var ranges = allMatches(postalWithMarkPattern, in: line)
         if isAddressLine || line.text.contains("郵便番号") {
-            ranges += allMatches(postalBarePattern, in: line)
+            let marked = ranges
+            ranges += allMatches(postalBarePattern, in: line).filter { bare in
+                !marked.contains { $0.overlaps(bare) }
+            }
         }
         return ranges.map { TextMatch(lineIndex: lineIndex, range: $0, category: .postalCode) }
     }
@@ -143,7 +150,7 @@ public enum PIIRules {
         return sum.isMultiple(of: 10)
     }
 
-    private static let myNumberPattern = regex(#"(?<!\d)\d{4}[\s-]?\d{4}[\s-]?\d{4}(?!\d)"#)
+    private static let myNumberPattern = regex(#"(?<!\d)(?<!\d[\s-])\d{4}[\s-]?\d{4}[\s-]?\d{4}(?![\s-]?\d)"#)
 
     static func myNumbers(in line: NormalizedText, lineIndex: Int) -> [TextMatch] {
         allMatches(myNumberPattern, in: line, mapToOriginal: false).compactMap { range in
@@ -201,10 +208,10 @@ public enum PIIRules {
     // MARK: - Backup rules for names and addresses
 
     private static let nameLabelPattern = regex(
-        #"^\s*(氏名|お名前|名前|ご氏名|フリガナ|ふりがな|Name|NAME)\s*[:：]?\s*"#
+        #"^\s*(氏名|お名前|名前|ご氏名|フリガナ|ふりがな|Name|NAME|担当者?|記入者|申請者|代表者|契約者|名義人?|受取人|差出人|宛名)(?![様殿各のはがをにへともで欄者人])\s*[:：]?\s*"#
     )
     private static let addressLabelPattern = regex(
-        #"^\s*(住所|ご住所|現住所|所在地|お届け先|送付先|送り先)\s*[:：]?\s*"#
+        #"^\s*(住所|ご住所|現住所|所在地|お届け先|送付先|送り先)(?![様殿各のはがをにへともで欄者人])\s*[:：]?\s*"#
     )
 
     /// Values following a name/address label, either on the same line
@@ -275,7 +282,7 @@ public enum PIIRules {
         #"[\#(kanji)ぁ-んァ-ヺー]{1,8}?(?:市|区|町|村|郡).*?(?:\d+\s*(?:丁目|番地?|号)|\d+-\d+|[一二三四五六七八九十]+丁目)"#
     )
     private static let addressContinuationPattern = regex(
-        #"号室|\d+\s*階|\d+F\b|\d+-\d+|ビル|マンション|ハイツ|コーポ|アパート|レジデンス|荘|棟|号館"#
+        #"号室|\d+\s*号|\d+\s*階|\d+F\b|ビル|マンション|ハイツ|コーポ|アパート|レジデンス|荘|棟|号館"#
     )
 
     /// A line starting with 〒, or containing "municipality + block number"
@@ -364,6 +371,20 @@ public enum PIIRules {
     }
 
     // MARK: - Text helpers
+
+    /// Form labels that are never PII themselves. The LLM occasionally returns the
+    /// label "氏名" as a name; these are dropped.
+    private static let labelWords: Set<String> = [
+        "氏名", "名前", "お名前", "ご氏名", "フリガナ", "ふりがな", "なまえ", "Name", "NAME", "name",
+        "住所", "ご住所", "現住所", "所在地", "お届け先", "送付先", "送り先", "生年月日", "電話", "電話番号",
+        "TEL", "Tel", "メール", "メールアドレス", "Email", "E-mail", "担当", "担当者", "郵便番号", "宛名"
+    ]
+
+    static func isLabel(_ text: String) -> Bool {
+        let trimmed = NormalizedText(text).text
+            .trimmingCharacters(in: CharacterSet.whitespaces.union(CharacterSet(charactersIn: ":：")))
+        return labelWords.contains(trimmed)
+    }
 
     static func isKanaOnly(_ text: String) -> Bool {
         let chars = NormalizedText(text).text.filter { !$0.isWhitespace }

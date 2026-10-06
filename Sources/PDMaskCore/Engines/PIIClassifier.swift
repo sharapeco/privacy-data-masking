@@ -15,15 +15,15 @@ public enum PIIClassifier {
     private static let instructions = """
         画像から読み取ったテキスト行が与えられます。各行の先頭の [番号] は行番号です。
         個人を特定できる「人名」と「住所」に当たる部分をすべて探してください。
-        人名には、ふりがな・ローマ字表記・敬称付きの名前（〇〇様）も含みます。住所には郵便番号や建物名・部屋番号も含みます。
-        政党名・選挙区・役職・組織名・会社名・店舗名・地名だけのもの・UI のボタンや見出しの文言は該当しません。
+        人名には、姓だけ・名だけの表記、ふりがな・ローマ字表記、敬称付きの名前（〇〇様）も含みます。住所には郵便番号や建物名・部屋番号も含みます。
+        「氏名」「住所」のような項目名そのもの、政党名・選挙区・役職・組織名・会社名・店舗名・地名だけのもの・UI のボタンや見出しの文言は該当しません。
         text には該当行の文字列から該当部分だけをそのまま書き写してください。
         """
 
     /// Alternative wording tried once if the guardrails reject the first attempt.
     private static let fallbackInstructions = """
         あなたは画像の匿名化処理を手伝います。テキスト行が与えられるので、伏字にすべき箇所（人の名前と住所）を特定してください。
-        各行の先頭の [番号] は行番号です。名前のふりがなや敬称付きの名前、郵便番号付きの住所も対象です。
+        各行の先頭の [番号] は行番号です。姓だけの名前、名前のふりがなや敬称付きの名前、郵便番号付きの住所も対象です。
         組織名・会社名・店舗名・政党名・地名だけのもの・ボタンの文言は対象外です。
         text には該当行の文字列から該当部分だけをそのまま書き写してください。
         """
@@ -66,19 +66,26 @@ public enum PIIClassifier {
     }
 
     static func chunks(of lines: [TextLine]) -> [ArraySlice<TextLine>] {
-        var result: [ArraySlice<TextLine>] = []
+        chunkRanges(lineLengths: lines.map(\.text.count)).map { lines[$0] }
+    }
+
+    /// Splits lines into consecutive ranges of at most `maxLinesPerChunk` lines and
+    /// `maxCharactersPerChunk` characters (a single longer line gets its own chunk),
+    /// with `chunkOverlap` lines repeated between neighboring chunks.
+    static func chunkRanges(lineLengths: [Int]) -> [Range<Int>] {
+        var result: [Range<Int>] = []
         var start = 0
-        while start < lines.count {
+        while start < lineLengths.count {
             var end = start
             var characters = 0
-            while end < lines.count,
+            while end < lineLengths.count,
                   end - start < maxLinesPerChunk,
-                  end == start || characters + lines[end].text.count <= maxCharactersPerChunk {
-                characters += lines[end].text.count
+                  end == start || characters + lineLengths[end] <= maxCharactersPerChunk {
+                characters += lineLengths[end]
                 end += 1
             }
-            result.append(lines[start..<end])
-            if end >= lines.count { break }
+            result.append(start..<end)
+            if end >= lineLengths.count { break }
             start = max(end - chunkOverlap, start + 1)
         }
         return result
@@ -90,6 +97,7 @@ public enum PIIClassifier {
     /// (when that line is real), since over-masking is safer than leaking.
     private static func locate(_ finding: PIIFinding, in lines: [TextLine], chunk: ArraySlice<TextLine>) -> TextMatch? {
         let category: PIICategory = finding.kind == .name ? .name : .address
+        if PIIRules.isLabel(finding.text) { return nil }
 
         if lines.indices.contains(finding.lineIndex),
            let range = NormalizedText(lines[finding.lineIndex].text).locate(finding.text) {

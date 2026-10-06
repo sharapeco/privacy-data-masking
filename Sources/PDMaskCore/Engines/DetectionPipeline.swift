@@ -53,7 +53,10 @@ public enum DetectionPipeline {
         }
 
         return tagged
-            .sorted { ($0.0.lineIndex, $0.0.range.lowerBound) < ($1.0.lineIndex, $1.0.range.lowerBound) }
+            .sorted {
+                ($0.0.lineIndex, $0.0.range.lowerBound, $0.0.range.upperBound, $0.0.category.rawValue)
+                    < ($1.0.lineIndex, $1.0.range.lowerBound, $1.0.range.upperBound, $1.0.category.rawValue)
+            }
             .map { match, source in
                 let line = lines[match.lineIndex]
                 return Region(
