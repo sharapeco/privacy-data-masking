@@ -265,3 +265,138 @@ private func contains(_ results: [(PIICategory, String)], _ category: PIICategor
         #expect(PIIRules.isLabel(text))
     }
 }
+
+/// OCR lines of the table-style profile in examples/matsumoto-hisashi.jpg
+/// (coordinates copied from a real run, Vision's lower-left origin).
+private func line(_ text: String, _ x0: Double, _ x1: Double, _ y0: Double, _ y1: Double) -> TestLine {
+    TestLine(text, box: NormalizedBox(x: x0, y: y0, width: x1 - x0, height: y1 - y0))
+}
+
+private let profileTable: [TestLine] = [
+    line("衆議院議員", 0.371, 0.443, 0.923, 0.949),
+    line("まつもと", 0.375, 0.436, 0.842, 0.877),
+    line("ひさし", 0.475, 0.520, 0.843, 0.876),
+    line("松本 尚", 0.352, 0.522, 0.742, 0.834),
+    line("選挙区", 0.368, 0.417, 0.618, 0.649),
+    line("=選回数", 0.368, 0.433, 0.534, 0.565),
+    line("生年月日", 0.368, 0.430, 0.449, 0.483),
+    line("住所", 0.368, 0.401, 0.344, 0.375),
+    line("電話番号", 0.368, 0.432, 0.238, 0.270),
+    line("カード番号", 0.368, 0.443, 0.156, 0.185),
+    line("趣味", 0.368, 0.401, 0.073, 0.103),
+    line("千葉県第13区", 0.490, 0.587, 0.617, 0.650),
+    line("3回", 0.485, 0.516, 0.534, 0.565),
+    line("昭和37年06月03日", 0.488, 0.622, 0.452, 0.480),
+    line("274-0054", 0.485, 0.563, 0.368, 0.398),
+    line("千葉県船橋市金堀町12345", 0.490, 0.679, 0.323, 0.351),
+    line("070-0000-0110", 0.488, 0.606, 0.239, 0.270),
+    line("************ 4242", 0.487, 0.637, 0.157, 0.183),
+    line("ASMR観賞", 0.488, 0.568, 0.072, 0.101),
+]
+
+private func wholeLineMatch(_ index: Int, in lines: [TestLine], _ category: PIICategory) -> TextMatch {
+    TextMatch(lineIndex: index, range: lines[index].text.startIndex..<lines[index].text.endIndex, category: category)
+}
+
+@Suite struct ProfileTableRegressions {
+    @Test func splitFuriganaAboveNameIsAllFound() {
+        let added = PIIRules.expand([wholeLineMatch(3, in: profileTable, .name)], lines: profileTable)
+        #expect(Set(added.map(\.lineIndex)) == [1, 2])
+    }
+
+    /// Moves "ひさし" up by `lines` line heights and reports whether it is still furigana.
+    private func fragmentFound(shiftedBy lines: Double) -> Bool {
+        var table = profileTable
+        let height = table[2].box.height
+        table[2].box.y += height * lines
+        return PIIRules.furigana(of: 3, lines: table).contains(2)
+    }
+
+    @Test func slightlyMisalignedFragmentIsSameRow() {
+        #expect(fragmentFound(shiftedBy: 0.4))
+    }
+
+    @Test func fragmentOnAnotherRowIsNotFurigana() {
+        #expect(!fragmentFound(shiftedBy: 0.8))
+    }
+
+    @Test func kanaOnSameRowAwayFromNameIsNotFurigana() {
+        var table = profileTable
+        table.append(line("おしらせ", 0.800, 0.860, 0.843, 0.876))
+        #expect(!PIIRules.furigana(of: 3, lines: table).contains(table.count - 1))
+    }
+
+    @Test func addressLabelCenteredBesideTwoLines() {
+        #expect(Set(PIIRules.valuesRightOf(label: 7, lines: profileTable)) == [14, 15])
+    }
+
+    @Test func eachLabelGetsOnlyItsOwnRow() {
+        #expect(PIIRules.valuesRightOf(label: 6, lines: profileTable) == [13])
+        #expect(PIIRules.valuesRightOf(label: 8, lines: profileTable) == [16])
+    }
+
+    @Test func detectFindsAddressPostalCodeAndMaskedCard() {
+        let results = detected(profileTable)
+        #expect(contains(results, .address, "274-0054"))
+        #expect(contains(results, .address, "千葉県船橋市金堀町12345"))
+        #expect(contains(results, .cardNumber, "************ 4242"))
+        #expect(!results.contains { ["千葉県第13区", "3回", "ASMR観賞", "衆議院議員"].contains($0.1) })
+    }
+
+    @Test func postalCodeOnlyLineNextToAddress() {
+        let added = PIIRules.expand([wholeLineMatch(15, in: profileTable, .address)], lines: profileTable)
+        #expect(added.contains { $0.lineIndex == 14 && $0.category == .postalCode })
+    }
+}
+
+@Suite struct TopAlignedTable {
+    // Coordinates from examples/fixture-profile.png: labels top-aligned with values.
+    private let table: [TestLine] = [
+        line("生年月日", 0.066, 0.199, 0.752, 0.779),
+        line("住所", 0.064, 0.136, 0.700, 0.729),
+        line("電話", 0.066, 0.136, 0.604, 0.629),
+        line("1990年1月1日", 0.266, 0.497, 0.752, 0.779),
+        line("〒100-0001 東京都千代田区千代田1-1", 0.260, 0.867, 0.696, 0.733),
+        line("サンプルマンション302号室", 0.266, 0.699, 0.652, 0.679),
+        line("090-1234-5678", 0.266, 0.535, 0.604, 0.629),
+    ]
+
+    @Test func addressLabelDoesNotTakeBirthdate() {
+        let values = PIIRules.valuesRightOf(label: 1, lines: table)
+        #expect(values.contains(4))
+        #expect(!values.contains(3))
+        #expect(!values.contains(6))
+    }
+}
+
+@Suite struct MaskedAndLabeledNumbers {
+    @Test(arguments: [
+        ("**** **** **** 4242", PIICategory.cardNumber),
+        ("************ 4242", .cardNumber),
+        ("＊＊＊＊ ＊＊＊＊ ＊＊＊＊ 4242", .cardNumber),
+        ("●●●● ●●●● ●●●● 1234", .cardNumber),
+        ("090-****-5678", .phone),
+        ("XXXX-XXXX-1234", .idNumber),
+    ])
+    func masked(text: String, category: PIICategory) {
+        #expect(contains(detected(text), category, text))
+    }
+
+    @Test(arguments: ["****", "ASMR観賞", "3回", "パスワード ********", "XXL 1234"])
+    func notMasked(text: String) {
+        #expect(!detected(text).contains { [.cardNumber, .phone, .idNumber].contains($0.0) })
+    }
+
+    @Test func cardLabelValue() {
+        #expect(contains(detected("カード番号：1234-5678"), .cardNumber, "1234-5678"))
+    }
+
+    @Test func idLabelValue() {
+        #expect(contains(detected("会員番号 A-001234"), .idNumber, "A-001234"))
+    }
+
+    @Test func idLabelWordsAreLabels() {
+        #expect(PIIRules.isLabel("カード番号"))
+        #expect(PIIRules.isLabel("会員番号："))
+    }
+}

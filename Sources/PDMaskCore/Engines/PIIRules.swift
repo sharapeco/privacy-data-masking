@@ -37,6 +37,7 @@ public enum PIIRules {
             matches += phones(in: line, lineIndex: index)
             matches += cardNumbers(in: line, lineIndex: index)
             matches += myNumbers(in: line, lineIndex: index)
+            matches += maskedNumbers(in: line, lineIndex: index)
             matches += honorificNames(in: line, lineIndex: index)
 
             let addressMatches = addresses(in: line, lineIndex: index)
@@ -50,20 +51,20 @@ public enum PIIRules {
         return matches
     }
 
+    /// How far apart (in line heights) the vertical centers of two OCR boxes may be
+    /// while still counting as the same row. Boxes shift a little with glyph shapes
+    /// (descenders, small kana); a shift of 0.8 lines or more usually means another row.
+    static let sameRowTolerance = 0.6
+
     /// Adds matches implied by already-detected names and addresses, from any source:
-    /// the furigana printed above/below a name, and address lines that continue
-    /// onto the next line (building name, room number).
+    /// the furigana printed above/below a name, address lines that continue onto the
+    /// next line (building name, room number), and a postal-code-only line next to an address.
     public static func expand<L: RuleLine>(_ matches: [TextMatch], lines: [L]) -> [TextMatch] {
         var added: [TextMatch] = []
 
         let nameLines = Set(matches.filter { $0.category == .name }.map(\.lineIndex))
         for index in nameLines where !isKanaOnly(lines[index].text) {
-            for neighbor in [lineAbove(index, lines: lines), lineBelow(index, lines: lines)].compactMap({ $0 })
-            where isKanaOnly(lines[neighbor].text)
-                && !isLabel(lines[neighbor].text)
-                && horizontalOverlapRatio(lines[index].box, lines[neighbor].box) >= 0.3 {
-                added.append(wholeLine(neighbor, lines: lines, category: .name))
-            }
+            added += furigana(of: index, lines: lines).map { wholeLine($0, lines: lines, category: .name) }
         }
 
         var addressLines = Set(matches.filter { $0.category == .address }.map(\.lineIndex))
@@ -84,7 +85,46 @@ public enum PIIRules {
             if next.isEmpty { break }
             addressLines.formUnion(next)
         }
+
+        for index in addressLines {
+            for neighbor in [lineAbove(index, lines: lines), lineBelow(index, lines: lines)].compactMap({ $0 })
+            where abs(lines[neighbor].box.minX - lines[index].box.minX) < 0.05
+                && firstMatch(postalOnlyPattern, in: NormalizedText(lines[neighbor].text).text) != nil {
+                added.append(wholeLine(neighbor, lines: lines, category: .postalCode))
+            }
+        }
         return added
+    }
+
+    /// The reading printed above or below a kanji name. It is often split into several
+    /// boxes ("まつもと" "ひさし"), so after finding the closest kana-only line, every
+    /// kana-only line on that same row over the name is included too.
+    static func furigana<L: RuleLine>(of index: Int, lines: [L]) -> [Int] {
+        let nameBox = lines[index].box
+        func isCandidate(_ other: Int) -> Bool {
+            other != index
+                && isKanaOnly(lines[other].text)
+                && !isLabel(lines[other].text)
+                && horizontalOverlapRatio(nameBox, lines[other].box) >= 0.3
+        }
+
+        var result: [Int] = []
+        for direction in [VerticalDirection.above, .below] {
+            guard let anchor = verticalNeighbors(index, lines: lines, direction: direction)
+                .filter({ isCandidate($0.index) })
+                .min(by: { $0.gap < $1.gap })?
+                .index
+            else { continue }
+            let anchorBox = lines[anchor].box
+            result += lines.indices.filter { other in
+                other == anchor || (isCandidate(other) && isSameRow(anchorBox, lines[other].box))
+            }
+        }
+        return result
+    }
+
+    static func isSameRow(_ a: NormalizedBox, _ b: NormalizedBox) -> Bool {
+        abs(a.midY - b.midY) < sameRowTolerance * max(a.height, b.height)
     }
 
     // MARK: - Format-based rules
@@ -115,6 +155,7 @@ public enum PIIRules {
 
     private static let postalWithMarkPattern = regex(#"〒\s*\d{3}-?\d{4}(?!\d)"#)
     private static let postalBarePattern = regex(#"(?<![\d-])\d{3}-\d{4}(?![\d-])"#)
+    private static let postalOnlyPattern = regex(#"^\s*〒?\s*\d{3}-\d{4}\s*$"#)
 
     static func postalCodes(in line: NormalizedText, lineIndex: Int, isAddressLine: Bool) -> [TextMatch] {
         var ranges = allMatches(postalWithMarkPattern, in: line)
@@ -176,6 +217,36 @@ public enum PIIRules {
         return digits[11] == expected
     }
 
+    /// Digits and masking characters (after NFKC, "＊" is "*") separated by spaces or
+    /// hyphens, e.g. "**** **** **** 4242", "090-****-5678", "XXXX-XXXX-1234".
+    private static let maskedNumberPattern = regex(
+        #"(?<![A-Za-z0-9*∗●•×])(?:[0-9*∗●•×Xx][\s-]?){7,}[0-9*∗●•×Xx](?![A-Za-z0-9*∗●•×])"#
+    )
+    private static let maskCharacters: Set<Character> = ["*", "∗", "●", "•", "×", "X", "x"]
+
+    /// Numbers that are already partly masked still reveal part of a card, phone or ID
+    /// number, so the whole value is blacked out. Classified by length: 13–19 positions
+    /// is a card number, 10–11 starting with 0 is a phone number, anything else an ID.
+    static func maskedNumbers(in line: NormalizedText, lineIndex: Int) -> [TextMatch] {
+        allMatches(maskedNumberPattern, in: line, mapToOriginal: false).compactMap { range in
+            let value = line.text[range]
+            let masks = value.filter(maskCharacters.contains).count
+            let digits = value.filter(\.isASCIIDigit).count
+            guard masks >= 4, digits >= 2 else { return nil }
+
+            let positions = masks + digits
+            let category: PIICategory
+            if (13...19).contains(positions) {
+                category = .cardNumber
+            } else if value.first == "0", (10...11).contains(positions) {
+                category = .phone
+            } else {
+                category = .idNumber
+            }
+            return TextMatch(lineIndex: lineIndex, range: line.originalRange(range), category: category)
+        }
+    }
+
     private static let datePattern = regex(
         #"(?:(?:19|20)\d{2}|(?:明治|大正|昭和|平成|令和|[MTSHR])\s*(?:\d{1,2}|元))\s*(?:年|[/.-])\s*\d{1,2}\s*(?:月|[/.-])\s*\d{1,2}(?:\s*日)?(?:\s*生まれ|\s*生)?"#
     )
@@ -213,23 +284,69 @@ public enum PIIRules {
     private static let addressLabelPattern = regex(
         #"^\s*(住所|ご住所|現住所|所在地|お届け先|送付先|送り先)(?![様殿各のはがをにへともで欄者人])\s*[:：]?\s*"#
     )
+    private static let cardLabelPattern = regex(
+        #"^\s*(カード番号|クレジットカード番号|クレジットカード|カードNo\.?)(?![様殿各のはがをにへともで欄者人])\s*[:：]?\s*"#
+    )
+    private static let idLabelPattern = regex(
+        #"^\s*(口座番号|会員番号|会員ID|顧客番号|お客様番号|個人番号|マイナンバー|免許証番号|保険証番号|被保険者番号|パスポート番号|旅券番号)(?![様殿各のはがをにへともで欄者人])\s*[:：]?\s*"#
+    )
+    private static let labelPatterns: [(NSRegularExpression, PIICategory)] = [
+        (nameLabelPattern, .name),
+        (addressLabelPattern, .address),
+        (cardLabelPattern, .cardNumber),
+        (idLabelPattern, .idNumber),
+    ]
 
-    /// Values following a name/address label, either on the same line
-    /// ("氏名：山田花子") or in a separate box to the right of / below a bare label.
+    /// Values following a label (name, address, card or ID number), either on the same
+    /// line ("氏名：山田花子") or in separate boxes to the right of / below a bare label.
     static func labeledValues<L: RuleLine>(lines: [L], normalized: [NormalizedText]) -> [TextMatch] {
         var matches: [TextMatch] = []
         for (index, line) in normalized.enumerated() {
-            for (pattern, category) in [(nameLabelPattern, PIICategory.name), (addressLabelPattern, .address)] {
+            for (pattern, category) in labelPatterns {
                 guard let label = firstMatch(pattern, in: line.text) else { continue }
                 let rest = label.upperBound..<line.text.endIndex
                 if !line.text[rest].trimmingCharacters(in: .whitespaces).isEmpty {
                     matches.append(TextMatch(lineIndex: index, range: line.originalRange(rest), category: category))
-                } else if let value = lineRightOf(index, lines: lines) ?? lineBelow(index, lines: lines) {
-                    matches.append(wholeLine(value, lines: lines, category: category))
+                    continue
                 }
+                var values = valuesRightOf(label: index, lines: lines)
+                if values.isEmpty, let below = lineBelow(index, lines: lines) {
+                    values = [below]
+                }
+                matches += values.map { wholeLine($0, lines: lines, category: category) }
             }
         }
         return matches
+    }
+
+    /// The value boxes of a bare label in a table layout. Every line left-aligned with
+    /// the label is treated as a row header; each box to the right is assigned to the
+    /// header whose vertical center is closest (ties go to the upper header, since in
+    /// top-aligned tables continuation lines sit below their label). This handles a
+    /// label centered beside a two-line value, like 住所 next to postal code + address.
+    static func valuesRightOf<L: RuleLine>(label index: Int, lines: [L]) -> [Int] {
+        let label = lines[index].box
+        let headers = lines.indices.filter { abs(lines[$0].box.minX - label.minX) <= 0.02 }
+
+        func nearestHeader(to midY: Double) -> Int? {
+            headers.min { a, b in
+                let distanceA = abs(lines[a].box.midY - midY)
+                let distanceB = abs(lines[b].box.midY - midY)
+                if abs(distanceA - distanceB) > 1e-3 { return distanceA < distanceB }
+                return lines[a].box.midY > lines[b].box.midY
+            }
+        }
+
+        let assigned = lines.indices.filter { other in
+            let box = lines[other].box
+            return other != index
+                && box.minX >= label.maxX - 0.01
+                && abs(box.midY - label.midY) <= 2 * label.height
+                && nearestHeader(to: box.midY) == index
+        }
+        // Only the nearest column of values, not further cells on the same row.
+        guard let column = assigned.map({ lines[$0].box.minX }).min() else { return [] }
+        return assigned.filter { lines[$0].box.minX <= column + 0.03 }
     }
 
     private static let kanji = "一-龯々〆ヵヶ"
@@ -327,47 +444,41 @@ public enum PIIRules {
         }
     }
 
-    private static func lineRightOf<L: RuleLine>(_ index: Int, lines: [L]) -> Int? {
-        let box = lines[index].box
-        return lines.indices
-            .filter { other in
-                other != index
-                    && verticalOverlapRatio(box, lines[other].box) > 0.5
-                    && lines[other].box.minX >= box.maxX - 0.01
-            }
-            .min { lines[$0].box.minX < lines[$1].box.minX }
+
+    enum VerticalDirection {
+        case above
+        case below
     }
 
     /// The nearest line directly above (Vision's y grows upward), horizontally
     /// overlapping and within 1.5 line heights.
     static func lineAbove<L: RuleLine>(_ index: Int, lines: [L]) -> Int? {
-        nearestVerticalNeighbor(index, lines: lines) { box, other in other.minY - box.maxY }
+        verticalNeighbors(index, lines: lines, direction: .above).min { $0.gap < $1.gap }?.index
     }
 
     static func lineBelow<L: RuleLine>(_ index: Int, lines: [L]) -> Int? {
-        nearestVerticalNeighbor(index, lines: lines) { box, other in box.minY - other.maxY }
+        verticalNeighbors(index, lines: lines, direction: .below).min { $0.gap < $1.gap }?.index
     }
 
-    private static func nearestVerticalNeighbor<L: RuleLine>(
+    /// Lines just above or below, horizontally overlapping and within 1.5 line heights,
+    /// with the vertical gap between the boxes.
+    static func verticalNeighbors<L: RuleLine>(
         _ index: Int,
         lines: [L],
-        gap: (NormalizedBox, NormalizedBox) -> Double
-    ) -> Int? {
+        direction: VerticalDirection
+    ) -> [(index: Int, gap: Double)] {
         let box = lines[index].box
-        return lines.indices
-            .compactMap { other -> (Int, Double)? in
-                guard other != index else { return nil }
-                let otherBox = lines[other].box
-                let distance = gap(box, otherBox)
-                let tolerance = -0.25 * min(box.height, otherBox.height)
-                guard distance >= tolerance,
-                      distance <= 1.5 * max(box.height, otherBox.height),
-                      horizontalOverlapRatio(box, otherBox) > 0
-                else { return nil }
-                return (other, distance)
-            }
-            .min { $0.1 < $1.1 }?
-            .0
+        return lines.indices.compactMap { other in
+            guard other != index else { return nil }
+            let otherBox = lines[other].box
+            let gap = direction == .above ? otherBox.minY - box.maxY : box.minY - otherBox.maxY
+            let tolerance = -0.25 * min(box.height, otherBox.height)
+            guard gap >= tolerance,
+                  gap <= 1.5 * max(box.height, otherBox.height),
+                  horizontalOverlapRatio(box, otherBox) > 0
+            else { return nil }
+            return (other, gap)
+        }
     }
 
     // MARK: - Text helpers
@@ -377,7 +488,9 @@ public enum PIIRules {
     private static let labelWords: Set<String> = [
         "氏名", "名前", "お名前", "ご氏名", "フリガナ", "ふりがな", "なまえ", "Name", "NAME", "name",
         "住所", "ご住所", "現住所", "所在地", "お届け先", "送付先", "送り先", "生年月日", "電話", "電話番号",
-        "TEL", "Tel", "メール", "メールアドレス", "Email", "E-mail", "担当", "担当者", "郵便番号", "宛名"
+        "TEL", "Tel", "メール", "メールアドレス", "Email", "E-mail", "担当", "担当者", "郵便番号", "宛名",
+        "カード番号", "クレジットカード", "クレジットカード番号", "口座番号", "会員番号", "会員ID", "顧客番号",
+        "お客様番号", "個人番号", "マイナンバー", "免許証番号", "保険証番号", "被保険者番号", "パスポート番号", "旅券番号"
     ]
 
     static func isLabel(_ text: String) -> Bool {

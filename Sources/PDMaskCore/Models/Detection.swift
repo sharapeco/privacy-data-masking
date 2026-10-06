@@ -24,6 +24,7 @@ public struct NormalizedBox: Codable, Hashable, Sendable {
     public var maxX: Double { x + width }
     public var minY: Double { y }
     public var maxY: Double { y + height }
+    public var midY: Double { y + height / 2 }
 
     /// Scales the box around its center (e.g. 1.3 = 30% larger), clamped to the image.
     public func scaled(by factor: Double) -> NormalizedBox {
@@ -77,6 +78,8 @@ public enum PIICategory: String, Codable, Sendable {
     case birthdate
     case cardNumber
     case myNumber
+    /// Other personal ID numbers: membership, account, license numbers, partly masked numbers.
+    case idNumber
     case face
     case barcode
 }
