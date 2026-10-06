@@ -14,16 +14,11 @@ struct DetectCommand: AsyncParsableCommand {
     @Option(help: "JSON の出力先（省略時は stdout）。")
     var output: String?
 
+    @OptionGroup var detection: DetectionFlags
+
     func run() async throws {
         let loaded = try ImageLoader.load(path: image)
-        let lines = try await TextDetector.detect(in: loaded.cgImage)
-        let report = DetectionReport(
-            imagePath: image,
-            imageWidth: loaded.width,
-            imageHeight: loaded.height,
-            lines: lines.map(\.info),
-            regions: []
-        )
-        try writeJSON(report, to: output, label: "detection report")
+        let report = try await DetectionPipeline.run(image: loaded, imagePath: image, options: detection.options)
+        try writeJSON(report, to: output, label: "detection report (\(report.regions.count) regions)")
     }
 }
