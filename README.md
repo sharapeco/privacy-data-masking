@@ -5,13 +5,41 @@
 
 ## 前提条件
 
-- macOS 26 (Tahoe) 以降、Apple Silicon Mac
-- **Apple Intelligence が有効になっていること**（システム設定 > Apple Intelligence と Siri）
+- macOS 26 (Tahoe) 以降と Apple Intelligence の両方に対応した Mac（下の表）
+- **Apple Intelligence が有効になっていること**（システム設定 > Apple Intelligence と Siri）。ストレージに最大 8 GB の空きが必要（M3 以降でユニファイドメモリ 12 GB 以上の Mac は最大 14 GB）。デバイスの言語と Siri の言語を同じにしておく
 - **Xcode.app がインストールされ、選択されていること**（Command Line Tools だけでは `@Generable` マクロをビルドできない）
 
   ```sh
   sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
   ```
+
+### 対応している Mac
+
+| 製品 | 画面サイズ | 対応モデル |
+|---|---|---|
+| MacBook Air | 13 インチ | MacBook Air (M1, 2020) 以降 |
+| | 15 インチ | MacBook Air (15-inch, M2, 2023) 以降 |
+| MacBook Pro | 13 インチ | MacBook Pro (13-inch, M1, 2020)、MacBook Pro (13-inch, M2, 2022) |
+| | 14 インチ | MacBook Pro (14-inch, 2021) 以降 |
+| | 16 インチ | MacBook Pro (16-inch, 2021) 以降 |
+| MacBook Neo | 13 インチ | MacBook Neo (13-inch, A18 Pro) |
+| iMac | 24 インチ | iMac (24-inch, M1, 2021) 以降 |
+| Mac mini | — | Mac mini (M1, 2020) 以降 |
+| Mac Studio | — | Mac Studio (2022) 以降 |
+| Mac Pro | — | Mac Pro (2023) 以降 |
+
+- **Intel Mac は使えない**。macOS 26 に対応していても、Apple Intelligence に対応していないため（MacBook Pro (16-inch, 2019)、MacBook Pro (13-inch, 2020, Four Thunderbolt 3 ports)、iMac (Retina 5K, 27-inch, 2020)、Mac Pro (2019)）。
+- MacBook Air (M1, 2020) と MacBook Air (M2, 2022) は名前にサイズが入っていないが、どちらも 13 インチ（13.3 インチと 13.6 インチ）。
+- 13 インチの MacBook Pro は M2, 2022 が最後のモデル。
+- 15 インチの MacBook Pro は 2019 年までの Intel モデルしかない。M シリーズ搭載の大きいモデルは 16 インチ（2021 年以降）。
+
+出典（2026-10-06 確認）：
+[macOS Tahoe 26 に対応しているコンピュータ](https://support.apple.com/en-us/122867)、
+[How to get Apple Intelligence](https://support.apple.com/en-us/121115)、
+[Apple Intelligence - Apple Developer](https://developer.apple.com/apple-intelligence/)（Foundation Models framework は Apple Intelligence 対応デバイスでのみ動作）、
+[Identify your MacBook Air](https://support.apple.com/en-us/102869)、
+[Identify your MacBook Pro](https://support.apple.com/en-us/108052)、
+Tech Specs（[MacBook Air (M1, 2020)](https://support.apple.com/en-us/111883)、[MacBook Air (M2, 2022)](https://support.apple.com/en-us/111867)）
 
 ## ビルド
 
